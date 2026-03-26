@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: whisper-room-live
+    runtime: python
+    rootDir: whisper-room-live
+    buildCommand: ""
+    startCommand: python server.py
+    healthCheckPath: /health
+    envVars:
+      - key: WHISPER_HOST
+        value: 0.0.0.0

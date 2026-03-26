@@ -1,0 +1,4 @@
+# Python version: 3.14.3
+# Whisper Room Live uses only the Python standard library.
+# This file is intentionally left without third-party dependencies.
+Python==3.14.3
