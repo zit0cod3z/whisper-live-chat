@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_HOST = "127.0.0.1"
+DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8787
 MAX_FILE_SIZE = 6 * 1024 * 1024
 PARTICIPANT_TTL_SECONDS = 90
