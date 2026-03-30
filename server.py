@@ -24,6 +24,11 @@ MAX_FILE_SIZE = 12 * 1024 * 1024
 PARTICIPANT_TTL_SECONDS = 90
 ROOM_GRACE_SECONDS = 5
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+MAX_WS_CONNECTS_PER_MINUTE = 60
+MAX_MESSAGES_PER_10_SECONDS = 45
+
+RATE_LIMITS: dict[str, list[float]] = {}
+RATE_LIMITS_LOCK = threading.Lock()
 
 
 @dataclass
@@ -41,6 +46,11 @@ class Room:
     messages: list[dict[str, Any]] = field(default_factory=list)
     clients: dict[str, ClientConnection] = field(default_factory=dict)
     updated_at: float = field(default_factory=time.time)
+    pinned_message_id: int | None = None
+    password_hash: str | None = None
+    expires_at: float | None = None
+    message_ttl_seconds: int | None = None
+    inactivity_lock_seconds: int | None = None
 
 
 ROOMS: dict[str, Room] = {}
@@ -59,6 +69,10 @@ def display_name(session_id: str) -> str:
     return f"Anon {session_id[:4].upper()}"
 
 
+def hash_secret(secret: str) -> str:
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
 def normalize_room_id(room_id: str) -> str:
     allowed = [char for char in room_id.lower() if char.isalnum() or char in {"-", "_"}]
     normalized = "".join(allowed)[:40]
@@ -71,7 +85,18 @@ def ensure_room(room_id: str) -> Room:
         room = Room()
         ROOMS[room_id] = room
     room.updated_at = now_ts()
+    prune_room(room)
     return room
+
+
+def prune_room(room: Room) -> None:
+    room.messages = [
+        message
+        for message in room.messages
+        if not message.get("expires_at") or message["expires_at"] > now_ts()
+    ]
+    if room.pinned_message_id and not any(message["id"] == room.pinned_message_id for message in room.messages):
+        room.pinned_message_id = None
 
 
 def cleanup_rooms() -> None:
@@ -80,6 +105,7 @@ def cleanup_rooms() -> None:
             cutoff = now_ts() - PARTICIPANT_TTL_SECONDS
             to_delete: list[str] = []
             for room_id, room in ROOMS.items():
+                prune_room(room)
                 stale_sessions = [
                     session_id
                     for session_id, client in room.clients.items()
@@ -92,11 +118,33 @@ def cleanup_rooms() -> None:
                             client.socket.close()
                         except OSError:
                             pass
-                if not room.clients and room.updated_at < now_ts() - ROOM_GRACE_SECONDS:
+                room_expired = room.expires_at is not None and room.expires_at <= now_ts()
+                room_locked = (
+                    room.inactivity_lock_seconds is not None
+                    and not room.clients
+                    and room.updated_at < now_ts() - room.inactivity_lock_seconds
+                )
+                if room_expired or room_locked or (not room.clients and room.updated_at < now_ts() - ROOM_GRACE_SECONDS):
                     to_delete.append(room_id)
             for room_id in to_delete:
                 ROOMS.pop(room_id, None)
+            for key, timestamps in list(RATE_LIMITS.items()):
+                RATE_LIMITS[key] = [stamp for stamp in timestamps if stamp >= now_ts() - 60]
+                if not RATE_LIMITS[key]:
+                    RATE_LIMITS.pop(key, None)
         time.sleep(10)
+
+
+def is_rate_limited(bucket: str, *, max_hits: int, window_seconds: int) -> bool:
+    now = now_ts()
+    with RATE_LIMITS_LOCK:
+        timestamps = [stamp for stamp in RATE_LIMITS.get(bucket, []) if stamp >= now - window_seconds]
+        if len(timestamps) >= max_hits:
+            RATE_LIMITS[bucket] = timestamps
+            return True
+        timestamps.append(now)
+        RATE_LIMITS[bucket] = timestamps
+        return False
 
 
 def build_ws_accept(key: str) -> str:
@@ -255,7 +303,18 @@ def notify_presence(room_id: str) -> None:
     with ROOMS_LOCK:
         room = ROOMS.get(room_id)
         participants = len(room.clients) if room else 0
-    broadcast_room_state(room_id, {"type": "presence", "participants": participants})
+        participant_details = [
+            {
+                "session_id": client.session_id,
+                "sender_name": client.sender_name,
+                "last_seen": client.last_seen,
+            }
+            for client in room.clients.values()
+        ] if room else []
+    broadcast_room_state(
+        room_id,
+        {"type": "presence", "participants": participants, "participant_details": participant_details},
+    )
 
 
 class ChatHandler(BaseHTTPRequestHandler):
@@ -290,9 +349,24 @@ class ChatHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         room_id = normalize_room_id(query.get("room", ["lobby"])[0])
         session_id = str(query.get("session_id", [""])[0]).strip()
+        room_passcode = str(query.get("passcode", [""])[0]).strip()
+        client_ip = self.client_address[0]
         if not session_id:
             self._json_response({"error": "session_id is required"}, status=HTTPStatus.BAD_REQUEST)
             return
+        if is_rate_limited(f"ws-connect:{client_ip}", max_hits=MAX_WS_CONNECTS_PER_MINUTE, window_seconds=60):
+            self._json_response({"error": "Too many connection attempts"}, status=HTTPStatus.TOO_MANY_REQUESTS)
+            return
+
+        with ROOMS_LOCK:
+            existing_room = ROOMS.get(room_id)
+            if existing_room is not None:
+                if existing_room.expires_at is not None and existing_room.expires_at <= now_ts():
+                    self._json_response({"error": "This room link has expired"}, status=HTTPStatus.GONE)
+                    return
+                if existing_room.password_hash and hash_secret(room_passcode) != existing_room.password_hash:
+                    self._json_response({"error": "This room requires the correct passphrase"}, status=HTTPStatus.FORBIDDEN)
+                    return
 
         accept_key = build_ws_accept(ws_key)
         self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
@@ -319,6 +393,14 @@ class ChatHandler(BaseHTTPRequestHandler):
             delivered_history = update_message_receipts(room, session_id, delivered_up_to=room.next_id)
             history = list(room.messages)
             participants = len(room.clients)
+            participant_details = [
+                {
+                    "session_id": room_client.session_id,
+                    "sender_name": room_client.sender_name,
+                    "last_seen": room_client.last_seen,
+                }
+                for room_client in room.clients.values()
+            ]
 
         safe_send(
             client,
@@ -329,6 +411,14 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "sender_name": sender_name,
                 "participants": participants,
                 "messages": history,
+                "pinned_message_id": room.pinned_message_id,
+                "participant_details": participant_details,
+                "room_policy": {
+                    "expires_at": room.expires_at,
+                    "message_ttl_seconds": room.message_ttl_seconds,
+                    "inactivity_lock_seconds": room.inactivity_lock_seconds,
+                    "is_protected": bool(room.password_hash),
+                },
             },
         )
         notify_presence(room_id)
@@ -358,6 +448,70 @@ class ChatHandler(BaseHTTPRequestHandler):
                 if event_type == "ping":
                     safe_send(client, {"type": "pong"})
                     continue
+                if event_type == "room_settings":
+                    passphrase = str(message_data.get("passphrase", "")).strip()
+                    expiry_minutes = int(message_data.get("expiry_minutes", 0) or 0)
+                    message_ttl_minutes = int(message_data.get("message_ttl_minutes", 0) or 0)
+                    inactivity_lock_minutes = int(message_data.get("inactivity_lock_minutes", 0) or 0)
+                    with ROOMS_LOCK:
+                        room = ensure_room(room_id)
+                        room.password_hash = hash_secret(passphrase) if passphrase else None
+                        room.expires_at = now_ts() + (expiry_minutes * 60) if expiry_minutes > 0 else None
+                        room.message_ttl_seconds = message_ttl_minutes * 60 if message_ttl_minutes > 0 else None
+                        room.inactivity_lock_seconds = (
+                            inactivity_lock_minutes * 60 if inactivity_lock_minutes > 0 else None
+                        )
+                        room.updated_at = now_ts()
+                        policy_payload = {
+                            "type": "room_policy",
+                            "room_policy": {
+                                "expires_at": room.expires_at,
+                                "message_ttl_seconds": room.message_ttl_seconds,
+                                "inactivity_lock_seconds": room.inactivity_lock_seconds,
+                                "is_protected": bool(room.password_hash),
+                            },
+                        }
+                    broadcast_room_state(room_id, policy_payload)
+                    continue
+                if event_type == "reaction":
+                    message_id = int(message_data.get("message_id", 0) or 0)
+                    emoji = str(message_data.get("emoji", "")).strip()[:10]
+                    if not message_id or not emoji:
+                        continue
+                    with ROOMS_LOCK:
+                        room = ensure_room(room_id)
+                        reaction_payload = None
+                        for message in room.messages:
+                            if message["id"] != message_id:
+                                continue
+                            reactions = message.setdefault("reactions", {})
+                            sessions = reactions.setdefault(emoji, [])
+                            if session_id in sessions:
+                                sessions.remove(session_id)
+                            else:
+                                sessions.append(session_id)
+                            if not sessions:
+                                reactions.pop(emoji, None)
+                            reaction_payload = {
+                                "type": "reaction_update",
+                                "message_id": message_id,
+                                "reactions": reactions,
+                            }
+                            break
+                    if reaction_payload:
+                        broadcast_room_state(room_id, reaction_payload)
+                    continue
+                if event_type == "pin":
+                    message_id = int(message_data.get("message_id", 0) or 0)
+                    with ROOMS_LOCK:
+                        room = ensure_room(room_id)
+                        room.pinned_message_id = None if room.pinned_message_id == message_id else message_id
+                        pin_payload = {
+                            "type": "pin_update",
+                            "pinned_message_id": room.pinned_message_id,
+                        }
+                    broadcast_room_state(room_id, pin_payload)
+                    continue
                 if event_type == "typing":
                     is_typing = bool(message_data.get("is_typing"))
                     broadcast_room_state(
@@ -385,7 +539,13 @@ class ChatHandler(BaseHTTPRequestHandler):
 
                 text = str(message_data.get("text", "")).strip()
                 file_payload = message_data.get("file")
-                if not text and not file_payload:
+                reply_to = int(message_data.get("reply_to", 0) or 0)
+                ttl_minutes = int(message_data.get("self_destruct_minutes", 0) or 0)
+                encrypted_text = message_data.get("encrypted_text")
+                if not text and not file_payload and not encrypted_text:
+                    continue
+                if is_rate_limited(f"msg:{room_id}:{session_id}", max_hits=MAX_MESSAGES_PER_10_SECONDS, window_seconds=10):
+                    safe_send(client, {"type": "error", "message": "You are sending messages too quickly. Please slow down."})
                     continue
 
                 validated_file = None
@@ -400,15 +560,20 @@ class ChatHandler(BaseHTTPRequestHandler):
                     room_client = room.clients.get(session_id)
                     if room_client is not None:
                         room_client.last_seen = now_ts()
+                    effective_ttl_seconds = ttl_minutes * 60 if ttl_minutes > 0 else room.message_ttl_seconds
                     message = {
                         "id": room.next_id,
                         "session_id": session_id,
                         "sender_name": sender_name,
                         "text": text,
+                        "encrypted_text": encrypted_text if isinstance(encrypted_text, dict) else None,
                         "file": validated_file,
                         "timestamp": iso_now(),
+                        "reply_to": reply_to or None,
+                        "expires_at": now_ts() + effective_ttl_seconds if effective_ttl_seconds else None,
                         "delivered_to": [session_id],
                         "read_by": [session_id],
+                        "reactions": {},
                     }
                     room.next_id += 1
                     room.messages.append(message)
@@ -474,18 +639,42 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         content_type, _ = mimetypes.guess_type(file_path.name)
         body = file_path.read_bytes()
+        etag = hashlib.sha1(body).hexdigest()
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(HTTPStatus.NOT_MODIFIED)
+            self._send_common_headers(content_type or "application/octet-stream")
+            self.send_header("ETag", etag)
+            self.end_headers()
+            return
         self.send_response(HTTPStatus.OK)
         self._send_common_headers(content_type or "application/octet-stream")
+        self.send_header("ETag", etag)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def _send_common_headers(self, content_type: str) -> None:
         self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", "no-store")
+        cacheable_types = {
+            "text/css",
+            "application/javascript",
+            "text/javascript",
+            "image/png",
+            "image/jpeg",
+            "image/svg+xml",
+            "application/manifest+json",
+        }
+        cache_control = "public, max-age=3600" if content_type in cacheable_types or self.path.endswith("/sw.js") else "no-store"
+        self.send_header("Cache-Control", cache_control)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "geolocation=(), camera=(), payment=(), usb=()")
 
     def _json_response(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload).encode("utf-8")
