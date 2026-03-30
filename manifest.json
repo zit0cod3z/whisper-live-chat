@@ -1,0 +1,9 @@
+{
+  "name": "Whisper Room Live",
+  "short_name": "WhisperRoom",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#07121f",
+  "theme_color": "#ffb703",
+  "description": "Private ephemeral realtime chat with secure room links, media sharing, and voice notes."
+}
