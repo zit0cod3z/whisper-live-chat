@@ -125,6 +125,48 @@ h1, h2, .btn, .eyebrow {
   color: var(--muted);
 }
 
+.tool-stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.tool-card {
+  padding: 1rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.participant-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.participant-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.78rem;
+}
+
+.participant-pill.self {
+  border-color: rgba(255, 183, 3, 0.35);
+  background: rgba(255, 183, 3, 0.08);
+}
+
+.participant-dot,
+.avatar-dot {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  display: inline-block;
+}
+
 .chat-panel,
 .attachment-panel {
   min-height: 78vh;
@@ -169,6 +211,26 @@ h1, h2, .btn, .eyebrow {
   color: var(--text);
 }
 
+.pinned-message-card,
+.reply-preview {
+  margin-bottom: 0.9rem;
+  padding: 0.8rem 0.95rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pinned-message-card {
+  border-color: rgba(255, 183, 3, 0.24);
+}
+
+.reply-preview {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+}
+
 .message-card {
   width: min(100%, 560px);
   padding: 0.95rem 1rem;
@@ -190,6 +252,10 @@ h1, h2, .btn, .eyebrow {
 
 .message-card.grouped .message-meta {
   display: none;
+}
+
+.message-card.muted {
+  opacity: 0.42;
 }
 
 .message-meta {
@@ -221,6 +287,16 @@ h1, h2, .btn, .eyebrow {
 .message-text {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.message-reply {
+  margin-bottom: 0.65rem;
+  padding: 0.55rem 0.7rem;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 14px 14px 0;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .message-preview,
@@ -258,6 +334,14 @@ h1, h2, .btn, .eyebrow {
   margin-top: 0.8rem;
 }
 
+.message-toolbar,
+.reaction-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.7rem;
+}
+
 .message-action-link {
   display: inline-flex;
   align-items: center;
@@ -268,6 +352,34 @@ h1, h2, .btn, .eyebrow {
   border: 1px solid rgba(255, 255, 255, 0.08);
   color: var(--text);
   text-decoration: none;
+}
+
+.message-tool-button,
+.reaction-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.42rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.reaction-chip.active {
+  border-color: rgba(255, 183, 3, 0.45);
+  background: rgba(255, 183, 3, 0.12);
+}
+
+.qr-card img {
+  width: 160px;
+  height: 160px;
+  border-radius: 20px;
+  background: white;
+  padding: 0.45rem;
 }
 
 .composer-area,
@@ -469,6 +581,13 @@ h1, h2, .btn, .eyebrow {
   animation: voiceProgress 3s ease-in-out infinite;
 }
 
+.voice-wave-preview {
+  width: 100%;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 .lightbox-overlay {
   position: fixed;
   inset: 0;
@@ -570,7 +689,50 @@ h1, h2, .btn, .eyebrow {
 
   .share-strip,
   .theme-switcher,
-  .room-link {
+.room-link {
     width: 100%;
   }
+}
+
+.typing-avatar-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.typing-avatar {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.gallery-grid {
+  width: min(100%, 1100px);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.gallery-card {
+  border-radius: 20px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.gallery-card img,
+.gallery-card video {
+  width: 100%;
+  height: 180px;
+  object-fit: cover;
+  display: block;
+}
+
+.gallery-meta {
+  padding: 0.75rem;
+  font-size: 0.82rem;
+  color: var(--muted);
 }
