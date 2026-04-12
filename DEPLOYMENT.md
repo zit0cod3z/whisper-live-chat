@@ -1,6 +1,6 @@
 # Whisper Room Live Deployment
 
-This app is fully separate from the Django fuel delivery project.
+This app is fully private.
 
 ## Environment variables
 
