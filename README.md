@@ -13,7 +13,7 @@ A standalone lightweight chat app that stays completely separate from the Django
 ## Run it
 
 ```powershell
-cd "C:\Users\KIZITO\Documents\New project\whisper-room-live"
+
 python server.py
 ```
 
